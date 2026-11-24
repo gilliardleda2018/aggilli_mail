@@ -1,0 +1,20 @@
+# Dados do servidor: emails, contas, chaves DKIM, certificados, estado
+data/
+data.antes-*/
+backups/
+dados-servidor.tar.gz
+
+# Segredos e configuração local
+.env
+painel/.senha
+painel/config.json
+vps/id_ed25519
+vps/id_ed25519.pub
+vps/vm-ip.txt
+
+# Logs
+*.log
+
+# Python
+.venv/
+__pycache__/

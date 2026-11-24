@@ -1,0 +1,81 @@
+services:
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: mailserver
+    hostname: ${MAIL_HOST:?defina MAIL_HOST no arquivo .env}
+    env_file: mailserver.env
+    environment:
+      - POSTMASTER_ADDRESS=postmaster@${DOMAIN}
+    ports:
+      - "25:25"     # SMTP (recebimento de outros servidores)
+      - "465:465"   # SMTPS (envio autenticado, TLS implícito)
+      - "587:587"   # Submission (envio autenticado, STARTTLS)
+      - "143:143"   # IMAP (STARTTLS)
+      - "993:993"   # IMAPS
+      # Portas com PROXY protocol, só para a VPS, expostas apenas no IP do Tailscale
+      - "${TAILSCALE_IP:?defina TAILSCALE_IP no .env}:12525:12525"
+      - "${TAILSCALE_IP}:12465:12465"
+      - "${TAILSCALE_IP}:12587:12587"
+      - "${TAILSCALE_IP}:12993:12993"
+    volumes:
+      - ./data/mail-data/:/var/mail/
+      - ./data/mail-state/:/var/mail-state/
+      - ./data/mail-logs/:/var/log/mail/
+      - ./data/config/:/tmp/docker-mailserver/
+      - ./data/certs/:/etc/letsencrypt/:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      mailnet:
+        aliases:
+          - ${MAIL_HOST}   # webmail acessa o servidor pelo nome do certificado, sem sair da máquina
+    restart: always
+    stop_grace_period: 1m
+    healthcheck:
+      test: "ss --listening --tcp | grep -P 'LISTEN.+:smtp' || exit 1"
+      timeout: 3s
+      retries: 0
+
+  # Webmail (Roundcube), acessível só pelo Tailscale
+  webmail:
+    image: roundcube/roundcubemail:latest
+    container_name: webmail
+    depends_on: [mailserver]
+    ports:
+      - "${TAILSCALE_IP}:8502:80"
+    environment:
+      - ROUNDCUBEMAIL_DEFAULT_HOST=ssl://${MAIL_HOST}
+      - ROUNDCUBEMAIL_DEFAULT_PORT=993
+      - ROUNDCUBEMAIL_SMTP_SERVER=ssl://${MAIL_HOST}
+      - ROUNDCUBEMAIL_SMTP_PORT=465
+      - ROUNDCUBEMAIL_USERNAME_DOMAIN=${DOMAIN}
+      - ROUNDCUBEMAIL_DB_TYPE=sqlite
+      - ROUNDCUBEMAIL_SKIN=elastic
+      - ROUNDCUBEMAIL_PLUGINS=archive,zipdownload,managesieve,markasjunk
+      - ROUNDCUBEMAIL_UPLOAD_MAX_FILESIZE=25M
+    volumes:
+      - ./data/roundcube/db:/var/roundcube/db
+      - ./data/roundcube/config:/var/roundcube/config
+    networks:
+      mailnet:
+        ipv4_address: 172.31.250.10   # IP fixo: liberado no fail2ban do servidor
+    restart: always
+
+  # Emite/renova o certificado TLS do Let's Encrypt para MAIL_HOST.
+  # Precisa da porta 80 livre e do registro A de MAIL_HOST apontando para este IP.
+  certbot:
+    image: certbot/certbot
+    profiles: ["certs"]
+    ports:
+      - "80:80"
+    volumes:
+      - ./data/certs/:/etc/letsencrypt/
+    command: >
+      certonly --standalone --non-interactive --agree-tos
+      --register-unsafely-without-email
+      -d ${MAIL_HOST}
+
+networks:
+  mailnet:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
