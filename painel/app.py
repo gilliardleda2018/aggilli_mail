@@ -1,4 +1,5 @@
 """Painel de administração do servidor de email (docker-mailserver)."""
+import base64
 import json
 import secrets
 import subprocess
@@ -32,7 +33,26 @@ VM_IP_FILE = BASE / "vps" / "vm-ip.txt"
 VM_IP = VM_IP_FILE.read_text().strip() if VM_IP_FILE.exists() else ""
 WEBMAIL_URL = f"http://{ENV.get('TAILSCALE_IP', 'localhost')}:8502"
 
-st.set_page_config(page_title="Painel de email", page_icon="✉️", layout="wide")
+MARCA = Path(__file__).resolve().parent / "marca"
+st.set_page_config(page_title="Aggilli Mail", page_icon=str(MARCA / "favicon-32x32.png"),
+                   layout="wide")
+st.logo(str(MARCA / "logo-512.png"), size="large", icon_image=str(MARCA / "icon-192x192.png"))
+
+# Identidade Aggilli: faixa ciano→verde no topo e títulos em azul petróleo
+st.markdown("""
+<style>
+  [data-testid="stHeader"] { border-top: 4px solid; border-image: linear-gradient(90deg,#00A8D8,#50A000) 1; }
+  h1, h2, h3 { color: #004860 !important; }
+  .aggilli-nome { font-size: 1.6rem; font-weight: 700; color: #004860; line-height: 1.1; }
+  .aggilli-nome span { color: #3D7F00; }
+</style>
+""", unsafe_allow_html=True)
+
+
+def brand_title(sub: str = "") -> None:
+    st.markdown(f'<div class="aggilli-nome">Aggilli <span>Mail</span></div>', unsafe_allow_html=True)
+    if sub:
+        st.caption(sub)
 
 
 # ---------------- login ----------------
@@ -40,30 +60,38 @@ st.set_page_config(page_title="Painel de email", page_icon="✉️", layout="wid
 def login() -> bool:
     if st.session_state.get("ok"):
         return True
-    st.title("✉️ Painel de email")
-    if not auth.configured():
-        st.info("Primeiro acesso: crie a senha do painel.")
-        with st.form("primeira_senha"):
-            p1 = st.text_input("Nova senha (mínimo 10 caracteres)", type="password")
-            p2 = st.text_input("Repita a senha", type="password")
-            if st.form_submit_button("Salvar senha", type="primary"):
-                if err := validate_password(p1, p2):
-                    st.error(err)
-                elif auth.configured():  # alguém salvou enquanto esta tela estava aberta
-                    st.error("A senha já foi definida. Recarregue a página.")
-                else:
-                    auth.save(p1)
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        logo = base64.b64encode((MARCA / "logo-512.png").read_bytes()).decode()
+        st.markdown(f"""
+<div style="text-align:center; margin: 2rem 0 1.5rem;">
+  <img src="data:image/png;base64,{logo}" alt="Aggilli" style="width:220px; max-width:70%;">
+  <div class="aggilli-nome" style="font-size:2.2rem; margin-top:.5rem;">Aggilli <span>Mail</span></div>
+  <div style="color:#4A6470; margin-top:.25rem;">Painel do servidor de email</div>
+</div>""", unsafe_allow_html=True)
+        if not auth.configured():
+            st.info("Primeiro acesso: crie a senha do painel.")
+            with st.form("primeira_senha"):
+                p1 = st.text_input("Nova senha (mínimo 10 caracteres)", type="password")
+                p2 = st.text_input("Repita a senha", type="password")
+                if st.form_submit_button("Salvar senha", type="primary", width="stretch"):
+                    if err := validate_password(p1, p2):
+                        st.error(err)
+                    elif auth.configured():  # alguém salvou enquanto esta tela estava aberta
+                        st.error("A senha já foi definida. Recarregue a página.")
+                    else:
+                        auth.save(p1)
+                        st.session_state.ok = True
+                        st.rerun()
+            return False
+        with st.form("login"):
+            pwd = st.text_input("Senha", type="password")
+            if st.form_submit_button("Entrar", type="primary", width="stretch"):
+                if auth.check(pwd):
                     st.session_state.ok = True
                     st.rerun()
-        return False
-    with st.form("login"):
-        pwd = st.text_input("Senha", type="password")
-        if st.form_submit_button("Entrar", type="primary"):
-            if auth.check(pwd):
-                st.session_state.ok = True
-                st.rerun()
-            time.sleep(2)
-            st.error("Senha incorreta.")
+                time.sleep(2)
+                st.error("Senha incorreta.")
     return False
 
 
@@ -491,8 +519,7 @@ PAGES = {
 
 if login():
     with st.sidebar:
-        st.title("✉️ Email")
-        st.caption(DOMAIN)
+        brand_title(DOMAIN)
         page = st.radio("Menu", list(PAGES), label_visibility="collapsed")
         st.divider()
         if st.button("Sair"):

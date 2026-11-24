@@ -1,0 +1,11 @@
+# Identidade Aggilli (cores tiradas da logo)
+[theme]
+base = "light"
+primaryColor = "#007A9E"            # ciano escuro: texto branco com contraste 4.9:1
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#EEF7FA" # barra lateral e caixas
+textColor = "#0B2E3A"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"

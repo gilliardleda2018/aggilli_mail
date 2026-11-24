@@ -50,11 +50,14 @@ services:
       - ROUNDCUBEMAIL_USERNAME_DOMAIN=${DOMAIN}
       - ROUNDCUBEMAIL_DB_TYPE=sqlite
       - ROUNDCUBEMAIL_SKIN=elastic
-      - ROUNDCUBEMAIL_PLUGINS=archive,zipdownload,managesieve,markasjunk
+      - ROUNDCUBEMAIL_PLUGINS=archive,zipdownload,managesieve,markasjunk,aggilli
       - ROUNDCUBEMAIL_UPLOAD_MAX_FILESIZE=25M
     volumes:
       - ./data/roundcube/db:/var/roundcube/db
-      - ./data/roundcube/config:/var/roundcube/config
+      - ./webmail/config:/var/roundcube/config:ro
+      - ./painel/marca/logo-256.png:/var/www/html/skins/elastic/images/aggilli-logo.png:ro
+      - ./painel/marca/favicon.ico:/var/www/html/skins/elastic/images/favicon.ico:ro
+      - ./webmail/aggilli:/var/www/html/plugins/aggilli:ro
     networks:
       mailnet:
         ipv4_address: 172.31.250.10   # IP fixo: liberado no fail2ban do servidor

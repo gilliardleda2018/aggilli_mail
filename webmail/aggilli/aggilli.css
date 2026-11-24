@@ -1,0 +1,20 @@
+/* Login: logo grande e centralizada */
+#layout-content.no-navbar #logo,
+body.task-login #logo {
+  display: block;
+  margin: 0 auto 1.5rem;
+  max-height: none;
+  width: 220px;
+  max-width: 70vw;
+}
+body.task-login #login-form { text-align: center; }
+body.task-login #login-form form { text-align: left; }
+
+/* Cores Aggilli: botão principal em ciano escuro (contraste 4.9:1 com branco) */
+.btn-primary, .btn-primary:hover, .btn-primary:focus,
+body.task-login #rcmloginsubmit {
+  background-color: #007A9E !important;
+  border-color: #007A9E !important;
+}
+a, .listing li.selected > a { color: #007A9E; }
+#layout-menu { border-top: 4px solid #00A8D8; }
