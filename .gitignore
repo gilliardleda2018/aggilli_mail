@@ -18,3 +18,7 @@ vps/vm-ip.txt
 # Python
 .venv/
 __pycache__/
+
+# Estado do monitor de avisos
+painel/monitor-estado.json
+painel/avisos.jsonl

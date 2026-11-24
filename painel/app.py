@@ -13,7 +13,9 @@ import streamlit as st
 import auth
 import backup
 import stats
+import checks as verif
 import dms
+import monitor
 import oracle
 
 BASE = Path(__file__).resolve().parent.parent
@@ -184,6 +186,11 @@ def check_list(items: list[tuple[str, str, str]]) -> None:
     st.markdown(f'<div class="ag-checks">{html}</div>', unsafe_allow_html=True)
 
 
+@st.cache_data(ttl=60, show_spinner="Verificando o servidor…")
+def run_checks():
+    return verif.run_all(load_stats().entregas)
+
+
 def page_overview():
     st.header("Visão geral")
     s = dms.container_status()
@@ -192,58 +199,14 @@ def page_overview():
         return
     boxes = dms.list_mailboxes()
     fila = dms.queue()
-    usage = dms.quota_report()
     st_ = load_stats()
     hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     e = stats.since(st_.entregas, hoje)
     recebidos = e[(e.tipo == "recebido") & (e.status == "sent")]
     enviados = e[(e.tipo != "recebido") & (e.status == "sent")]
-    falhas = e[e.status == "bounced"]
 
-    checks = []
-    rodando = s["rodando"] and s["saude"] == "healthy"
-    checks.append(("ok" if rodando else "erro", "Servidor",
-                   f"{'funcionando' if rodando else s['saude']} desde {s['desde']} UTC"))
+    checks = [(c.nivel, c.titulo, c.detalhe) for c in run_checks()]
     svcs = dms.services()
-    parados = [n for n, est in svcs if est != "RUNNING"]
-    checks.append(("ok" if not parados else "erro", "Serviços",
-                   f"{len(svcs) - len(parados)} de {len(svcs)} rodando"
-                   + (f" · parados: {', '.join(parados)}" if parados else "")))
-    relay = dms.relay_host()
-    # O que vale é o último envio para fora: devoluções antigas já resolvidas não acendem alerta
-    ext = st_.entregas[st_.entregas.tipo == "enviado"]
-    ultimo_ok = ext.empty or ext.sort_values("data").status.iloc[-1] == "sent"
-    checks.append(("ok" if relay and ultimo_ok else "aviso", "Envio de emails",
-                   ("pela Oracle Email Delivery" if "oracle" in relay else relay or "direto, sem relay")
-                   + ("" if ultimo_ok else " · o último envio foi recusado, veja Estatísticas")
-                   + (f" · {len(falhas)} devolvido(s) hoje" if not falhas.empty else "")))
-    venc = dms.cert_expiry(MAIL_HOST)
-    if venc:
-        dias = (datetime.strptime(venc, "%b %d %H:%M:%S %Y %Z") - datetime.now()).days
-        checks.append(("ok" if dias > 30 else "aviso" if dias > 7 else "erro", "Certificado TLS",
-                       f"vence em {dias} dias" + (" · renove com `./mail.sh certs-dns`" if dias <= 30 else "")))
-    else:
-        checks.append(("erro", "Certificado TLS", "não encontrado"))
-    bks = backup.list_backups()
-    if bks:
-        horas = (datetime.now() - bks[0].quando).total_seconds() / 3600
-        checks.append(("ok" if horas <= 30 else "aviso", "Backup",
-                       f"último em {bks[0].quando:%d/%m %H:%M}" + (" · atrasado" if horas > 30 else "")))
-    else:
-        checks.append(("aviso", "Backup", "nenhum backup feito"))
-    adiadas = [i for i in fila if i["fila"] == "deferred"]
-    checks.append(("ok" if not adiadas else "aviso", "Fila de envio",
-                   "vazia" if not fila else f"{len(fila)} mensagem(ns), {len(adiadas)} com atraso"))
-    cheias = [u for u, x in usage.items() if x.limite_kib and x.usado_kib >= 0.9 * x.limite_kib]
-    checks.append(("ok" if not cheias else "aviso", "Cotas",
-                   "nenhuma caixa perto do limite" if not cheias else f"quase cheias: {', '.join(cheias)}"))
-
-    senders = oracle_senders()
-    if senders is not None:
-        sem = [b.email for b in boxes if b.email not in senders]
-        checks.append(("ok" if not sem else "aviso", "Remetentes na Oracle",
-                       "todas as caixas podem enviar" if not sem
-                       else f"não podem enviar: {', '.join(sem)} · autorize na ficha da caixa"))
 
     problemas = sum(n != "ok" for n, _, _ in checks)
     if problemas == 0:
@@ -281,6 +244,12 @@ def page_overview():
 <small>Usuário: o email completo. Senha: a da caixa.</small>
 </div>""", unsafe_allow_html=True)
 
+    cfg_av = verif.settings()
+    if monitor.scheduled() and cfg_av["email"]:
+        st.caption(f"Avisos por email ligados: problemas são enviados para **{cfg_av['email']}**.")
+    else:
+        st.caption("Avisos por email desligados. Ligue na página **Avisos** para saber de problemas sem "
+                   "precisar abrir o painel.")
     with st.expander("Serviços do servidor"):
         st.dataframe(pd.DataFrame(svcs, columns=["Serviço", "Estado"]), hide_index=True, width="stretch")
 
@@ -919,6 +888,102 @@ def page_stats():
                    "Os dados se atualizam a cada 2 minutos.")
 
 
+def page_alerts():
+    st.header("Avisos e monitoramento")
+    cfg = load_config()
+    av = verif.settings()
+    ligado = monitor.scheduled()
+    hist = monitor.history(200)
+    estado = json.loads(monitor.ESTADO.read_text()) if monitor.ESTADO.exists() else {}
+    abertos = [k for k, v in estado.items() if v["nivel"] != "ok"]
+
+    c = st.columns(4)
+    c[0].metric("Monitor", "ligado" if ligado else "desligado",
+                help="Roda sozinho a cada 10 minutos, mesmo com o painel fechado.")
+    c[1].metric("Problemas abertos", len(abertos))
+    ultima = datetime.fromtimestamp(monitor.ESTADO.stat().st_mtime) if monitor.ESTADO.exists() else None
+    c[2].metric("Última verificação", f"{ultima:%d/%m %H:%M}" if ultima else "nunca")
+    c[3].metric("Avisos enviados", sum(1 for h in hist if h.get("email")))
+    if not ligado or not av["email"]:
+        st.info("Ligue o monitor e informe um email abaixo para ser avisado quando algo der errado.",
+                icon=":material/notifications_off:")
+
+    esq, dir_ = st.columns([3, 2], gap="large")
+    with esq:
+        st.subheader("Situação agora")
+        check_list([(c.nivel, c.titulo, c.detalhe) for c in run_checks()])
+        b1, b2 = st.columns(2)
+        if b1.button("Verificar agora", icon=":material/refresh:", width="stretch",
+                     help="Roda o monitor agora. Se algo mudou, o aviso é enviado por email."):
+            run_checks.clear()
+            load_stats.clear()
+            with st.spinner("Verificando…"):
+                evs = monitor.run()
+            st.toast(f"{len(evs)} mudança(s) encontrada(s)" if evs else "Nada mudou desde a última verificação",
+                     icon="✅")
+            time.sleep(0.6)
+            st.rerun()
+        if b2.button("Enviar email de teste", icon=":material/send:", width="stretch",
+                     disabled=not av["email"]):
+            try:
+                monitor.send(av["email"], "[Aggilli Mail] Teste de aviso",
+                             "Este é um teste: os avisos do servidor de email chegam aqui.")
+                st.toast(f"Teste enviado para {av['email']}", icon="✅")
+            except dms.DmsError as e:
+                st.error(f"Não consegui enviar: {e}")
+
+    with dir_:
+        st.subheader("Configuração")
+        with st.form("avisos"):
+            on = st.toggle("Monitorar e avisar por email", value=ligado)
+            email = st.text_input("Enviar avisos para", value=av["email"], placeholder="voce@gmail.com",
+                                  help="Prefira um email fora deste servidor (ex.: Gmail): se o servidor "
+                                       "parar, um aviso para uma caixa daqui não chegaria.")
+            st.markdown("**Quando avisar**")
+            x1, x2 = st.columns(2)
+            cota = x1.number_input("Caixa acima de (% da cota)", 50, 100, av["cota_pct"], step=5)
+            disco = x2.number_input("Disco acima de (%)", 50, 99, av["disco_pct"], step=5)
+            cert = x1.number_input("Certificado vence em (dias)", 7, 60, av["cert_dias"])
+            bk = x2.number_input("Backup sem rodar há (horas)", 12, 168, av["backup_horas"])
+            fila = x1.number_input("Email preso na fila há (min)", 10, 1440, av["fila_min"], step=10)
+            lim = x2.number_input("Envios do dia acima de (% do limite)", 50, 100, av["limite_pct"], step=5)
+            limite = x1.number_input("Limite diário da Oracle", 1, 100000, av["limite_diario"],
+                                     help="Contas em teste da Oracle: 200 por dia.")
+            rep = x2.number_input("Lembrar de novo após (horas)", 1, 168, av["repetir_horas"],
+                                  help="Se o problema continuar, manda outro aviso depois desse tempo.")
+            if st.form_submit_button("Salvar", type="primary"):
+                email = email.strip()
+                if on and not dms.EMAIL_RE.match(email):
+                    st.error("Informe um email válido para receber os avisos.")
+                else:
+                    cfg["avisos"] = {"email": email, "cota_pct": int(cota), "disco_pct": int(disco),
+                                     "cert_dias": int(cert), "backup_horas": int(bk), "fila_min": int(fila),
+                                     "limite_pct": int(lim), "limite_diario": int(limite),
+                                     "repetir_horas": int(rep)}
+                    save_config(cfg)
+                    monitor.set_scheduled(on)
+                    run_checks.clear()
+                    st.toast("Configuração salva", icon="✅")
+                    time.sleep(0.6)
+                    st.rerun()
+        st.caption("Você recebe um email quando um problema aparece, outro quando ele é resolvido e um "
+                   "lembrete se ele continuar. Sem mudanças, nenhum email é enviado.")
+
+    st.subheader("Histórico")
+    if not hist:
+        st.caption("Nenhum aviso registrado ainda.")
+    else:
+        tipos = {"problema": "⚠️ Problema", "lembrete": "🔁 Continua", "resolvido": "✅ Resolvido"}
+        st.dataframe(pd.DataFrame({
+            "Quando": [datetime.fromisoformat(h["quando"]).strftime("%d/%m %H:%M") for h in hist],
+            "Evento": [tipos.get(h["tipo"], h["tipo"]) for h in hist],
+            "Item": [h["titulo"] for h in hist],
+            "Detalhe": [h["detalhe"] for h in hist],
+            "Email": ["enviado" if h.get("email") else ("falhou: " + h["erro"] if h.get("erro")
+                                                         else "não configurado") for h in hist],
+        }), hide_index=True, width="stretch")
+
+
 def page_logs():
     st.header("Logs")
     c1, c2 = st.columns([1, 3])
@@ -939,6 +1004,7 @@ PG = {
     "caixas": st.Page(page_mailboxes, title="Caixas", icon=":material/inbox:", url_path="caixas"),
     "aliases": st.Page(page_aliases, title="Aliases", icon=":material/alternate_email:", url_path="aliases"),
     "fila": st.Page(page_queue, title="Fila de envio", icon=":material/schedule_send:", url_path="fila"),
+    "avisos": st.Page(page_alerts, title="Avisos", icon=":material/notifications:", url_path="avisos"),
     "seguranca": st.Page(page_security, title="Segurança", icon=":material/shield:", url_path="seguranca"),
     "dns": st.Page(page_dns, title="DNS", icon=":material/dns:", url_path="dns"),
     "backup": st.Page(page_backup, title="Backup", icon=":material/backup:", url_path="backup"),
@@ -947,7 +1013,7 @@ PG = {
 MENU = {
     "Painel": [PG["visao"], PG["estatisticas"]],
     "Email": [PG["webmail"], PG["caixas"], PG["aliases"], PG["fila"]],
-    "Servidor": [PG["seguranca"], PG["dns"], PG["backup"], PG["logs"]],
+    "Servidor": [PG["avisos"], PG["seguranca"], PG["dns"], PG["backup"], PG["logs"]],
 }
 
 if login():

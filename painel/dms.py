@@ -22,11 +22,11 @@ def _docker_prefix() -> tuple[str, ...]:
     return () if ok else ("sg", "docker", "-c")
 
 
-def _run(cmd: list[str], timeout: int = 60, check: bool = True) -> str:
+def _run(cmd: list[str], timeout: int = 60, check: bool = True, stdin: bytes | None = None) -> str:
     prefix = _docker_prefix()
     full = [*prefix, shlex.join(cmd)] if prefix else cmd
-    proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
-    out = ANSI.sub("", proc.stdout + proc.stderr).strip()
+    proc = subprocess.run(full, capture_output=True, timeout=timeout, input=stdin)
+    out = ANSI.sub("", (proc.stdout + proc.stderr).decode(errors="replace")).strip()
     if check and proc.returncode != 0:
         raise DmsError(out or f"falhou: {' '.join(cmd[:4])}")
     return out
@@ -195,6 +195,7 @@ def queue() -> list[dict]:
                 "para": r.get("address"),
                 "motivo": r.get("delay_reason", ""),
                 "tamanho": q.get("message_size"),
+                "chegada": q.get("arrival_time"),
             })
     return items
 
@@ -307,3 +308,8 @@ def set_webmail_name(email: str, name: str) -> bool:
            '$s->execute([$argv[2],$argv[1]]); echo $s->rowCount();')
     out = _run(["docker", "exec", "webmail", "php", "-r", php, "--", email, name], check=False)
     return out.strip().isdigit() and int(out.strip()) > 0
+
+
+def sendmail(sender: str, raw: bytes) -> None:
+    """Entrega uma mensagem pronta pelo Postfix do servidor (sai pelo relay como qualquer outra)."""
+    _run(["docker", "exec", "-i", CONTAINER, "sendmail", "-f", sender, "-t"], stdin=raw, timeout=60)
