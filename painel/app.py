@@ -4,7 +4,7 @@ import json
 import secrets
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +12,7 @@ import streamlit as st
 
 import auth
 import backup
+import stats
 import dms
 
 BASE = Path(__file__).resolve().parent.parent
@@ -494,6 +495,104 @@ def page_backup():
             st.code(log, language="log")
 
 
+@st.cache_data(ttl=120, show_spinner="Lendo os logs…")
+def load_stats():
+    return stats.collect(DOMAIN)
+
+
+STAT_COLORS = ["#007A9E", "#50A000", "#D9822B", "#C0392B", "#8E44AD"]
+
+
+def page_stats():
+    st.header("Estatísticas")
+    s = load_stats()
+    periodo = st.segmented_control("Período", ["Hoje", "7 dias", "30 dias", "Tudo"], default="7 dias")
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = {"Hoje": hoje, "7 dias": hoje - timedelta(days=6),
+             "30 dias": hoje - timedelta(days=29)}.get(periodo)
+
+    e = stats.since(s.entregas, start)
+    rec = stats.since(s.recusas, start)
+    sp = stats.since(s.spam, start)
+    spam = sp[sp.acao.isin(stats.SPAM_ACTIONS)]
+    recebidos = e[(e.tipo == "recebido") & (e.status == "sent")]
+    enviados = e[(e.tipo != "recebido") & (e.status == "sent")]
+    falhas = e[e.status.isin(["bounced", "deferred"])]
+
+    c = st.columns(5)
+    c[0].metric("Recebidos", len(recebidos))
+    c[1].metric("Enviados", len(enviados))
+    c[2].metric("Falhas de envio", len(falhas))
+    c[3].metric("Recusados na entrada", len(rec))
+    c[4].metric("Spam detectado", len(spam))
+
+    if not e.empty or not rec.empty:
+        st.subheader("Por dia")
+        st.bar_chart(stats.daily(s, start), color=STAT_COLORS, stack=False, height=280)
+    else:
+        st.info("Nenhum movimento no período.")
+
+    if any("relay" in stats.short_reason(d) for d in falhas.detalhe):
+        st.error("O Gmail está recusando emails enviados por este servidor: ele não aceita envio direto "
+                 "de IP residencial. Veja os detalhes na aba **Falhas de envio**.")
+
+    t_fail, t_rej, t_top, t_spam = st.tabs(
+        ["⚠️ Falhas de envio", "🚫 Recusados na entrada", "🏆 Mais ativos", "🛡️ Spam"])
+    with t_fail:
+        if falhas.empty:
+            st.success("Nenhuma falha de envio no período.")
+        else:
+            st.dataframe(pd.DataFrame({
+                "Quando": falhas.data.dt.strftime("%d/%m %H:%M"), "De": falhas.de, "Para": falhas.para,
+                "Situação": falhas.status.map({"bounced": "devolvido", "deferred": "tentando de novo"}),
+                "Motivo": falhas.detalhe.map(stats.short_reason)}).iloc[::-1],
+                hide_index=True, width="stretch")
+    with t_rej:
+        st.caption(f"Além disso, {s.bloqueios_entrada} conexões foram barradas antes de enviar qualquer email "
+                   "(robôs e servidores mal configurados).")
+        if rec.empty:
+            st.success("Nenhum email recusado no período.")
+        else:
+            motivos = rec.motivo.str.replace(r"<[^>]*>: ", "", regex=True).value_counts()
+            st.dataframe(motivos.rename_axis("Motivo").reset_index(name="Vezes"), hide_index=True,
+                         width="stretch")
+            st.dataframe(pd.DataFrame({"Quando": rec.data.dt.strftime("%d/%m %H:%M"), "IP": rec.ip,
+                                       "De": rec.de, "Para": rec.para, "Motivo": rec.motivo}).iloc[::-1],
+                         hide_index=True, width="stretch")
+    with t_top:
+        c1, c2, c3 = st.columns(3)
+        def top(col, title, series):
+            col.markdown(f"**{title}**")
+            vc = series[series != ""].value_counts().head(10)
+            if vc.empty:
+                col.caption("Nada no período.")
+            else:
+                col.dataframe(vc.rename_axis("Endereço").reset_index(name="Emails"), hide_index=True,
+                              width="stretch")
+        top(c1, "Caixas que mais recebem", recebidos.para)
+        top(c2, "Quem mais envia para cá", recebidos.de)
+        top(c3, "Destinos externos mais usados", enviados[enviados.tipo == "enviado"].para)
+    with t_spam:
+        if sp.empty:
+            st.info("Nenhuma mensagem analisada no período.")
+        else:
+            c1, c2 = st.columns(2)
+            c1.metric("Mensagens analisadas", len(sp))
+            c2.metric("Nota média", f"{sp.nota.mean():.1f}", help="Quanto menor, mais confiável. Acima de 6 "
+                      "vai para a pasta de spam; acima de 11 é recusado.")
+            acoes = {"no action": "entregue normal", "add header": "marcado como spam",
+                     "rewrite subject": "marcado como spam", "greylist": "atrasado (greylist)",
+                     "soft reject": "adiado", "reject": "recusado"}
+            st.dataframe(sp.acao.map(acoes).fillna(sp.acao).value_counts()
+                         .rename_axis("Resultado").reset_index(name="Mensagens"),
+                         hide_index=True, width="stretch")
+
+    inicio = min([d.data.min() for d in (s.entregas, s.recusas) if not d.empty], default=None)
+    if inicio is not None:
+        st.caption(f"Logs disponíveis desde {inicio:%d/%m/%Y %H:%M}. O servidor guarda 4 semanas de log. "
+                   "Os dados se atualizam a cada 2 minutos.")
+
+
 def page_logs():
     st.header("Logs")
     c1, c2 = st.columns([1, 3])
@@ -507,6 +606,7 @@ def page_logs():
 
 PAGES = {
     "Visão geral": page_overview,
+    "Estatísticas": page_stats,
     "Webmail": page_webmail,
     "Caixas": page_mailboxes,
     "Aliases": page_aliases,
