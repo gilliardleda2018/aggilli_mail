@@ -100,7 +100,13 @@ def update_password(email: str, password: str) -> str:
 
 
 def delete_mailbox(email: str, apagar_emails: bool) -> str:
-    return setup("email", "del", "-y" if apagar_emails else "-n", email)
+    try:
+        return setup("email", "del", "-y" if apagar_emails else "-n", email)
+    except DmsError as e:
+        # Caixa que nunca recebeu email não tem pasta: não há o que apagar, só remove a conta
+        if apagar_emails and "does not exist" in str(e):
+            return setup("email", "del", "-n", email)
+        raise
 
 
 def set_quota(email: str, quota: str) -> str:

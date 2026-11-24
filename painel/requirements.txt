@@ -1,2 +1,3 @@
 streamlit>=1.40
 pandas
+oci>=2.150

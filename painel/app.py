@@ -14,6 +14,7 @@ import auth
 import backup
 import stats
 import dms
+import oracle
 
 BASE = Path(__file__).resolve().parent.parent
 
@@ -46,7 +47,27 @@ st.markdown("""
   h1, h2, h3 { color: #004860 !important; }
   .aggilli-nome { font-size: 1.6rem; font-weight: 700; color: #004860; line-height: 1.1; }
   .aggilli-nome span { color: #3D7F00; }
-  [data-testid="stSidebar"] { background: #F2F9FB; }
+  [data-testid="stSidebar"] { background: linear-gradient(180deg, #004860 0%, #00607E 55%, #007A9E 100%); }
+  [data-testid="stSidebar"] * { color: #E6F4F8; }
+  [data-testid="stSidebarHeader"] { height: auto; padding-top: 1.5rem; padding-bottom: 1rem;
+      justify-content: center; position: relative; }
+  [data-testid="stSidebarHeader"] > div:first-child { margin: 0 auto; }
+  [data-testid="stSidebarHeader"] img, [data-testid="stLogo"] { height: 7rem !important; width: auto;
+      max-width: 100%; background: #fff; border-radius: 18px; padding: 10px 14px;
+      box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+  [data-testid="stSidebarCollapseButton"] { position: absolute; right: .5rem; top: .5rem; }
+  [data-testid="stNavSectionHeader"], [data-testid="stNavSectionHeader"] * { color: #8FD3E8 !important;
+      font-weight: 700; letter-spacing: .04em; }
+  [data-testid="stSidebarNavLink"]:hover { background: rgba(255,255,255,.10); }
+  [data-testid="stSidebarNavLink"][aria-current="page"] { background: rgba(255,255,255,.18); }
+  [data-testid="stSidebarNavLink"] span { color: #fff !important; font-size: 1rem; }
+  [data-testid="stSidebarNavLink"] { padding-top: .45rem; padding-bottom: .45rem; gap: .75rem; }
+  [data-testid="stSidebarNavLink"] [data-testid="stIconMaterial"] { font-size: 1.6rem !important;
+      width: 1.6rem; height: 1.6rem; color: #8FD3E8 !important; }
+  [data-testid="stSidebarNavLink"][aria-current="page"] [data-testid="stIconMaterial"] { color: #fff !important; }
+  [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.2); }
+  [data-testid="stSidebar"] button { background: transparent; border-color: rgba(255,255,255,.45); }
+  [data-testid="stSidebar"] button:hover { background: rgba(255,255,255,.12); border-color: #fff; }
   [data-testid="stMetric"] { background: #fff; border: 1px solid #D3E8EF; border-radius: 12px;
       padding: 12px 16px; box-shadow: 0 1px 3px rgba(0,72,96,.06); }
   [data-testid="stMetricValue"] { color: #004860; }
@@ -217,6 +238,13 @@ def page_overview():
     checks.append(("ok" if not cheias else "aviso", "Cotas",
                    "nenhuma caixa perto do limite" if not cheias else f"quase cheias: {', '.join(cheias)}"))
 
+    senders = oracle_senders()
+    if senders is not None:
+        sem = [b.email for b in boxes if b.email not in senders]
+        checks.append(("ok" if not sem else "aviso", "Remetentes na Oracle",
+                       "todas as caixas podem enviar" if not sem
+                       else f"não podem enviar: {', '.join(sem)} · autorize na ficha da caixa"))
+
     problemas = sum(n != "ok" for n, _, _ in checks)
     if problemas == 0:
         st.markdown('<div class="ag-banner ok">Tudo funcionando</div>', unsafe_allow_html=True)
@@ -283,10 +311,38 @@ def quota_picker(label: str, key: str, default: str) -> str | None:
     return "0" if choice == "sem limite" else choice
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def oracle_senders() -> dict | None:
+    """Remetentes autorizados na Oracle; None se a Oracle não estiver configurada ou não responder."""
+    if not oracle.available():
+        return None
+    try:
+        return oracle.senders()
+    except oracle.OracleError:
+        return None
+
+
+def authorize_sender(email: str) -> bool:
+    """Autoriza o envio pela Oracle. Falha não impede a criação da caixa: vira aviso."""
+    if not oracle.available():
+        return False
+    try:
+        oracle.authorize(email)
+        return True
+    except oracle.OracleError as e:
+        st.session_state.setdefault("avisos", []).append(
+            f"{email} foi criada, mas não consegui autorizar o envio na Oracle ({e}). "
+            "Abra a ficha da caixa e clique em **Autorizar envio**.")
+        return False
+    finally:
+        oracle_senders.clear()
+
+
 def create_mailbox(email: str, password: str, quota: str, nome: str = "") -> None:
     dms.add_mailbox(email, password)
     if quota != "0":
         dms.set_quota(email, quota)
+    authorize_sender(email)
     if nome:
         cfg = load_config()
         cfg.setdefault("caixas", {})[email] = {"nome": nome}
@@ -377,7 +433,7 @@ def dialog_bulk(emails: list[str], cfg: dict):
         st.rerun()
 
 
-def mailbox_card(email: str, info: dict, cfg: dict) -> None:
+def mailbox_card(email: str, info: dict, cfg: dict, autorizada: bool | None) -> None:
     """Ficha de uma caixa, com as ações de edição."""
     meta = cfg.get("caixas", {}).get(email, {})
     k = email  # chaves dos campos mudam com a caixa, para não herdar valores da anterior
@@ -395,6 +451,19 @@ def mailbox_card(email: str, info: dict, cfg: dict) -> None:
         c[3].metric("Aliases", len(info["aliases"]))
         if info["aliases"]:
             st.caption("Também recebe por: " + ", ".join(info["aliases"]))
+        if autorizada is False:
+            c1, c2 = st.columns([4, 1], vertical_alignment="center")
+            c1.warning("Esta caixa recebe, mas ainda **não pode enviar**: o endereço não está autorizado "
+                       "no Oracle Email Delivery.", icon=":material/outgoing_mail:")
+            if c2.button("Autorizar envio", type="primary", key=f"or_{k}", width="stretch"):
+                try:
+                    oracle.authorize(email)
+                except oracle.OracleError as e:
+                    st.error(str(e))
+                else:
+                    oracle_senders.clear()
+                    st.toast(f"{email} autorizada a enviar", icon="✅")
+                    st.rerun()
 
         t_dados, t_cota, t_senha, t_acesso, t_rm = st.tabs(
             [":material/badge: Dados", ":material/inventory_2: Cota", ":material/key: Senha",
@@ -465,6 +534,11 @@ def mailbox_card(email: str, info: dict, cfg: dict) -> None:
             if st.button("Remover caixa", type="primary", disabled=confirma != email, key=f"rb_{k}"):
                 def remover():
                     dms.delete_mailbox(email, apagar)
+                    try:
+                        oracle.revoke(email)
+                    except oracle.OracleError:
+                        pass  # sem a caixa, a autorização sobrando na Oracle não faz mal
+                    oracle_senders.clear()
                     cfg.get("caixas", {}).pop(email, None)
                     save_config(cfg)
                 run(remover, f"{email} removida")
@@ -480,6 +554,9 @@ def page_mailboxes():
     show_generated()
     for e in st.session_state.pop("lote_erros", []):
         st.error(e)
+    for w in st.session_state.pop("avisos", []):
+        st.warning(w)
+    senders = oracle_senders()
 
     usage = dms.quota_report()
     susp = dms.suspended()
@@ -502,6 +579,8 @@ def page_mailboxes():
                           "pct": pct}
         rows.append({"Situação": "⏸ Suspensa" if b.email in susp else "● Ativa",
                      "Email": b.email, "Nome": meta.get(b.email, {}).get("nome", ""),
+                     "Envio": "?" if senders is None else
+                              "✓ autorizado" if b.email in senders else "✕ não autorizado",
                      "Uso": pct, "Ocupado": f"{dms.human_kib(u.usado_kib)} de {dms.human_kib(u.limite_kib)}",
                      "Mensagens": u.mensagens, "Último acesso": quando(iso),
                      "Responsável": meta.get(b.email, {}).get("obs", "")})
@@ -518,12 +597,14 @@ def page_mailboxes():
                           label_visibility="collapsed", icon=":material/search:")
     filtro = c2.selectbox("Filtro", ["Todas", "Ativas", "Suspensas", "Quase cheias"],
                           label_visibility="collapsed")
+    if senders is None and oracle.available():
+        st.caption("Não consegui consultar a Oracle agora: a coluna Envio fica com “?”.")
     if c3.button("Nova caixa", type="primary", icon=":material/add:", width="stretch"):
         dialog_new(emails, cfg)
     if c4.button("Em lote", icon=":material/playlist_add:", width="stretch"):
         dialog_bulk(emails, cfg)
 
-    df = pd.DataFrame(rows, columns=["Situação", "Email", "Nome", "Uso", "Ocupado", "Mensagens",
+    df = pd.DataFrame(rows, columns=["Situação", "Email", "Nome", "Envio", "Uso", "Ocupado", "Mensagens",
                                      "Último acesso", "Responsável"])
     if busca:
         b = busca.strip().lower()
@@ -556,7 +637,7 @@ def page_mailboxes():
     elif email is None and pre in infos:
         email = pre
     if email:
-        mailbox_card(email, infos[email], cfg)
+        mailbox_card(email, infos[email], cfg, None if senders is None else email in senders)
     else:
         st.caption("Clique numa linha para abrir a ficha da caixa.")
 
