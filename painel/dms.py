@@ -231,3 +231,73 @@ def dig(name: str, rtype: str) -> list[str]:
     proc = subprocess.run(["dig", "+short", rtype, name, "@8.8.8.8"],
                           capture_output=True, text=True, timeout=10)
     return [l.strip().strip('"') for l in proc.stdout.splitlines() if l.strip()]
+
+
+# ---------- acesso das caixas ----------
+
+ACCOUNTS = "/tmp/docker-mailserver/postfix-accounts.cf"
+SUSPENSO = "!"  # prefixo no hash: a senha deixa de conferir, mas a original volta ao reativar
+
+
+def suspended() -> set[str]:
+    out = exec_("cat", ACCOUNTS, check=False)
+    return {l.split("|", 1)[0] for l in out.splitlines() if "|" in l and "}" + SUSPENSO in l}
+
+
+def _edit_hash(email: str, old: str, new: str) -> None:
+    if not EMAIL_RE.match(email):
+        raise DmsError("Endereço inválido.")
+    # Endereço escapado para o sed; o arquivo é observado pelo servidor, que recarrega sozinho
+    esc = re.sub(r"([.\[\]*^$\\/])", r"\\\1", email)
+    exec_("sed", "-i", f"s/^{esc}|\\({{[^}}]*}}\\){old}/{esc}|\\1{new}/", ACCOUNTS)
+
+
+def suspend(email: str) -> None:
+    """Bloqueia login (IMAP, SMTP e webmail). A caixa continua recebendo emails."""
+    _edit_hash(email, "", SUSPENSO)
+
+
+def reactivate(email: str) -> None:
+    _edit_hash(email, re.escape(SUSPENSO), "")
+
+
+LOGIN = re.compile(r"^(\S+) .*?(?:imap-login: Logged in: user=<([^>]+)>.*?rip=([^,]+)"
+                   r"|client=[^\[]*\[([^\]]+)\], sasl_method=\w+, sasl_username=(\S+))")
+
+
+def last_logins() -> dict[str, tuple[str, str]]:
+    """Último acesso de cada caixa (IMAP, webmail ou SMTP autenticado): {email: (iso, ip)}."""
+    out = exec_("sh", "-c", "zcat -f /var/log/mail/mail.log* 2>/dev/null | grep -E "
+                "'imap-login: Logged in|sasl_username='", check=False, timeout=120)
+    last: dict[str, tuple[str, str]] = {}
+    for line in out.splitlines():
+        m = LOGIN.match(line)
+        if not m:
+            continue
+        user, ip = (m[2], m[3]) if m[2] else (m[5], m[4])
+        if user not in last or m[1] > last[user][0]:
+            last[user] = (m[1], ip)
+    return last
+
+
+def cert_expiry(host: str) -> str:
+    out = exec_("openssl", "x509", "-enddate", "-noout", "-in",
+                f"/etc/letsencrypt/live/{host}/fullchain.pem", check=False)
+    return out.partition("=")[2].strip()
+
+
+def relay_host() -> str:
+    out = exec_("cat", "/tmp/docker-mailserver/postfix-relaymap.cf", check=False)
+    m = re.search(r"\[([^\]]+)\]", out)
+    return m[1] if m else ""
+
+
+# ---------- webmail (nome do remetente no Roundcube) ----------
+
+def set_webmail_name(email: str, name: str) -> bool:
+    """Atualiza o nome da identidade padrão no Roundcube. False se a caixa nunca entrou no webmail."""
+    php = ('$d=new PDO("sqlite:/var/roundcube/db/sqlite.db");'
+           '$s=$d->prepare("update identities set name=? where email=? and del=0");'
+           '$s->execute([$argv[2],$argv[1]]); echo $s->rowCount();')
+    out = _run(["docker", "exec", "webmail", "php", "-r", php, "--", email, name], check=False)
+    return out.strip().isdigit() and int(out.strip()) > 0
