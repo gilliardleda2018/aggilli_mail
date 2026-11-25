@@ -223,7 +223,9 @@ case "${1:-}" in
           mkdir -p data/certs && docker compose --profile certs run --rm certbot \
             certonly --manual --preferred-challenges dns --agree-tos \
             --register-unsafely-without-email -d "$MAIL_HOST" ;;
-  up)     mkdir -p data && wait_tailscale && docker compose up -d mailserver webmail ;;
+  up)     mkdir -p data && wait_tailscale && docker compose up -d mailserver webmail
+           # MCP (se configurado): o Caddy dele usa o IP do Tailscale e falha se subir antes dele no boot.
+           if [[ -s mcp/.env ]]; then docker compose --profile mcp up -d mcp-email mcp-caddy; fi ;;
   vps-deploy) cmd_vps_deploy "${2:-}" "${3:-1}" ;;
   vps-link)   cmd_vps_link "${2:-}" ;;
   vps-unlink) set_env DEFAULT_RELAY_HOST "" && docker compose up -d mailserver ;;
