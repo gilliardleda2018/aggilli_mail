@@ -77,6 +77,57 @@ services:
       --register-unsafely-without-email
       -d ${MAIL_HOST}
 
+  # MCP do Aggilli Mail (pasta mcp/): a caixa do administrador no Aggilli Chat.
+  # Só sobe com o perfil "mcp" (./mail.sh mcp-up), depois de ./mail.sh mcp-config criar o mcp/.env.
+  mcp-email:
+    profiles: ["mcp"]
+    build: ./mcp
+    image: aggilli/mail-mcp:0.1.0
+    container_name: mcp-email
+    depends_on: [mailserver]
+    env_file:
+      - path: mcp/.env
+        required: false
+    environment:
+      # Fala com o mailserver pelo nome do certificado (alias na mailnet), sem sair da máquina.
+      - MCP_IMAP_HOST=${MAIL_HOST}
+      - MCP_SMTP_HOST=${MAIL_HOST}
+      - MCP_TIMEZONE=America/Sao_Paulo
+    volumes:
+      - mcp_dados:/data           # banco OAuth e contador de envios
+    networks:
+      mailnet:
+        ipv4_address: 172.31.250.11
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    restart: always
+
+  # HTTPS público do MCP. A VM da Oracle repassa 443/80 (HAProxy + PROXY protocol) pela Tailscale.
+  mcp-caddy:
+    profiles: ["mcp"]
+    image: caddy:2.11.7-alpine
+    container_name: mcp-caddy
+    depends_on: [mcp-email]
+    environment:
+      # Só o domínio: os segredos do mcp/.env não entram no Caddy.
+      - MCP_DOMAIN=${MCP_DOMAIN:-mcp-mail.aggillintelligence.com.br}
+    ports:
+      - "${TAILSCALE_IP}:12443:443"
+      - "${TAILSCALE_IP}:12080:80"
+    volumes:
+      - ./mcp/Caddyfile:/etc/caddy/Caddyfile:ro
+      - mcp_caddy_dados:/data
+      - mcp_caddy_config:/config
+    networks: [mailnet]
+    restart: always
+
+volumes:
+  mcp_dados:
+  mcp_caddy_dados:
+  mcp_caddy_config:
+
 networks:
   mailnet:
     ipam:

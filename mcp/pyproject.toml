@@ -1,0 +1,24 @@
+[project]
+name = "aggilli-mail-mcp"
+version = "0.1.0"
+description = "Servidor MCP do Aggilli Mail: a caixa do administrador no Aggilli Chat (ler, organizar, rascunhar e enviar com confirmação)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietário - Aggilli Intelligence" }
+dependencies = [
+    "mcp==2.3.0",   # mesmo SDK do mcp_nextcloud; fixado porque a v2 ainda muda entre minors
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "anyio>=4", "httpx2"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-p anyio"
+testpaths = ["tests"]

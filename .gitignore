@@ -6,6 +6,7 @@ dados-servidor.tar.gz
 
 # Segredos e configuração local
 .env
+mcp/.env
 painel/.senha
 painel/config.json
 vps/id_ed25519

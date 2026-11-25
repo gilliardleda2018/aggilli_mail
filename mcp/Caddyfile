@@ -1,0 +1,36 @@
+# HTTPS público do MCP do Aggilli Mail.
+# Internet --443/80--> VM Oracle (HAProxy, TCP + PROXY protocol) --Tailscale--> casa:12443/12080 --> este Caddy.
+# O certificado sai do Let's Encrypt pela própria porta 443/80 repassada (o HAProxy não abre o TLS).
+{
+	servers {
+		listener_wrappers {
+			# IP real do cliente vem no PROXY protocol do HAProxy da VM (pela Tailscale/Docker).
+			proxy_protocol {
+				timeout 5s
+				allow 100.64.0.0/10 172.16.0.0/12 10.0.0.0/8
+			}
+			tls
+		}
+	}
+}
+
+{$MCP_DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	# Só o que o MCP usa: o endpoint, o OAuth, a tela de autorização e a saúde.
+	@mcp path /mcp /mcp/* /.well-known/* /register /authorize /token /revoke /login /healthz
+	handle @mcp {
+		reverse_proxy mcp-email:8000 {
+			transport http {
+				read_timeout 120s
+			}
+		}
+	}
+	handle {
+		respond 404
+	}
+}
