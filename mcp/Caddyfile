@@ -34,3 +34,9 @@
 		respond 404
 	}
 }
+
+# Porta 80 explícita para receber também o PROXY protocol do HAProxy (o
+# redirecionamento automático do Caddy não passa pelos listener_wrappers).
+http://{$MCP_DOMAIN} {
+	redir https://{host}{uri} 308
+}
