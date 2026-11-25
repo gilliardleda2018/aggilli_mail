@@ -1,12 +1,13 @@
 # Próximos passos: receber emails via Oracle Cloud (grátis)
 
 A conexão de casa está atrás de CGNAT e o roteador bloqueia IPv6 de entrada, então uma VM gratuita
-da Oracle recebe as conexões e repassa para cá pelo Tailscale. Os emails continuam **saindo direto de casa**
-(a Oracle bloqueia porta 25 de saída, mas aqui ela não é usada).
+da Oracle recebe as conexões e repassa para cá pelo Tailscale. A **saída** passa pelo **Oracle Email Delivery**
+(`data/config/postfix-relaymap.cf`, SMTP 587 com login; remetentes autorizados pelo painel), não mais direto de
+casa: desde 24/11/2026 os envios ao Gmail chegam (direto do IP residencial eram devolvidos).
 
 ```
 Internet ──25/465/587/993──▶ VM Oracle (HAProxy) ──Tailscale──▶ esta máquina (servidor de email)
-esta máquina ──25──▶ Gmail, Outlook… (como hoje)
+esta máquina ──587──▶ Oracle Email Delivery ──▶ Gmail, Outlook…
 ```
 
 ## 1. Criar a conta (você)

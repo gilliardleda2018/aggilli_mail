@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepara a VPS como "porta de entrada" do servidor de email que roda em casa.
 #
-#  Internet --25/465/587/993--> VPS (HAProxy) --Tailscale + PROXY protocol--> casa (docker-mailserver)
+#  Internet --25/465/587/993 (+ 80/443 do MCP)--> VPS (HAProxy) --Tailscale + PROXY protocol--> casa (docker-mailserver)
 #  casa --Tailscale:2525--> VPS (Postfix relay) --25--> internet   (saída com IP e PTR da VPS)
 #
 # Uso (como root, Debian 12+/Ubuntu 22.04+, inclusive Oracle Cloud Free):
@@ -77,6 +77,19 @@ frontend imaps
     default_backend imaps
 backend imaps
     server casa $HOME_TS_IP:12993 send-proxy-v2
+
+# MCP do Aggilli Mail (HTTPS terminado pelo Caddy em casa; aqui só TCP)
+frontend https
+    bind :443
+    default_backend https
+backend https
+    server casa $HOME_TS_IP:12443 send-proxy-v2
+
+frontend http
+    bind :80
+    default_backend http
+backend http
+    server casa $HOME_TS_IP:12080 send-proxy-v2
 EOF
 haproxy -c -f /etc/haproxy/haproxy.cfg
 
@@ -117,7 +130,7 @@ table inet filter {
     iif lo accept
     meta l4proto { icmp, ipv6-icmp } accept
     tcp dport 22 accept
-    tcp dport { 25, 465, 587, 993 } accept
+    tcp dport { 25, 80, 443, 465, 587, 993 } accept
     iifname "tailscale0" tcp dport $RELAY_PORT accept
     udp dport 41641 accept
   }

@@ -36,6 +36,14 @@ Uso: ./mail.sh <comando>
   painel           Inicia o painel em http://$TAILSCALE_IP:8501 (só pelo Tailscale)
   painel-senha     Define/troca a senha do painel
 
+  MCP do Aggilli Mail (caixa do administrador no Aggilli Chat; pasta mcp/):
+  mcp-config       Cria o mcp/.env (pede a senha da caixa sem mostrar; gera a senha de autorização)
+  mcp-up           Constrói e sobe o MCP e o HTTPS dele (perfil "mcp")
+  mcp-down         Para o MCP
+  mcp-senha        Mostra a senha de autorização pedida ao conectar no chat
+  mcp-logs         Acompanha os logs do MCP
+  mcp-revogar      Desconecta todos os clientes (o chat precisará autorizar de novo)
+
   Backup:
   backup [MANTER] [DESTINO_EXTRA]  Backup completo em backups/ (mantém os MANTER mais recentes, padrão 7)
   restore <arquivo.tar.gz>         Restaura um backup (os dados atuais vão para data.antes-<data>)
@@ -163,6 +171,24 @@ cmd_check() {
   echo "MX   $DOMAIN -> $(dig +short MX "$DOMAIN" 2>/dev/null || echo '(instale dnsutils p/ ver)')"
 }
 
+cmd_mcp_config() {
+  local f=mcp/.env box pw admin
+  if [[ -f $f ]] && ! [[ ${1:-} == --sobrescrever ]]; then
+    echo "$f já existe (use: ./mail.sh mcp-config --sobrescrever)"; return 0; fi
+  read -rp "Caixa usada pelo chat [contato@$DOMAIN]: " box; box=${box:-contato@$DOMAIN}
+  read -rsp "Senha da caixa $box (não aparece): " pw; echo
+  [[ -n $pw ]] || { echo "senha vazia"; return 1; }
+  # Entre aspas simples o Compose não interpreta $ na senha; aspas simples nela não cabem.
+  [[ $pw != *"'"* ]] || { echo "a senha não pode ter aspas simples; troque com ./mail.sh passwd $box"; return 1; }
+  admin=$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')
+  umask 077
+  sed -e "s|^MCP_MAIL_ADDRESS=.*|MCP_MAIL_ADDRESS=$box|" -e "s|^MCP_ADMIN_PASSWORD=.*|MCP_ADMIN_PASSWORD=$admin|" \
+      mcp/.env.example | grep -v '^MCP_MAIL_PASSWORD=' > "$f"
+  printf "MCP_MAIL_PASSWORD='%s'\n" "$pw" >> "$f"
+  chmod 600 "$f"
+  echo "$f criado (só você lê). Senha de autorização: ./mail.sh mcp-senha"
+}
+
 cmd_dns() {
   local home_ip; home_ip="$(public_ip)"
   local ip="${1:-$home_ip}"   # com VPS: ./mail.sh dns <IP público da VPS>
@@ -218,5 +244,12 @@ case "${1:-}" in
   dkim)   dms config dkim domain "$DOMAIN" && cmd_dns ;;
   dns)    cmd_dns "${2:-}" ;;
   status) docker compose ps && docker exec mailserver supervisorctl status ;;
+  mcp-config)  cmd_mcp_config "${2:-}" ;;
+  mcp-up)      [[ -f mcp/.env ]] || { echo "rode ./mail.sh mcp-config antes"; exit 1; }
+               wait_tailscale && docker compose --profile mcp up -d --build mcp-email mcp-caddy ;;
+  mcp-down)    docker compose --profile mcp stop mcp-email mcp-caddy ;;
+  mcp-senha)   grep '^MCP_ADMIN_PASSWORD=' mcp/.env | cut -d= -f2- ;;
+  mcp-logs)    docker compose --profile mcp logs -f mcp-email mcp-caddy ;;
+  mcp-revogar) docker compose --profile mcp exec mcp-email python -m aggilli_mail_mcp.admin revoke-all ;;
   *)      usage ;;
 esac

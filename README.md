@@ -71,3 +71,10 @@ Passos:
 - Agendado no crontab (padrão: todo dia às 03:00, mantém os 7 mais recentes), arquivos em `backups/`
 - Linha de comando: `./mail.sh backup [MANTER] [DESTINO_EXTRA]` e `./mail.sh restore backups/<arquivo>.tar.gz`
 - A restauração guarda os dados anteriores em `data.antes-<data>`
+
+## MCP do Aggilli Mail (Aggilli Chat)
+
+A caixa do administrador no Aggilli Chat: ler, buscar, organizar, rascunhar e enviar com confirmação.
+Pasta `mcp/`, serviços `mcp-email` e `mcp-caddy` (perfil `mcp`), HTTPS em `mcp-mail.aggillintelligence.com.br`
+pela VM da Oracle (portas 80/443). Passo a passo, ferramentas e proteções em [mcp/README.md](mcp/README.md).
+Comandos: `./mail.sh mcp-config`, `mcp-up`, `mcp-senha`, `mcp-logs`, `mcp-revogar`, `mcp-down`.
